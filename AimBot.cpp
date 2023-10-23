@@ -7,6 +7,10 @@ struct AimBot {
     std::vector<Player*>* players;
     Player* target = nullptr;
 
+    const float MAX_TARGET_ACQUISITION_FOV = 10; //only acquire targets that are no further than 5 degrees from crosshairs
+    const float MIN_AIMBOT_REACTION_FOV = 0.1; //if our crosshair is super close to the target angle then stop 
+    const int MAX_DISTANCE = util::metersToGameUnits(200);
+
     AimBot(ConfigLoader* cl, XDisplay* display, Level* level, LocalPlayer* localPlayer, std::vector<Player*>* players) {
         this->cl = cl;
         this->display = display;
@@ -16,36 +20,33 @@ struct AimBot {
     }
 
     void aimAssist(int counter) {
-        if (!active()) { releaseTarget(); return; }
+        resetLockFlag();
+        if (!active()) { target = nullptr; return; };
         if (target == nullptr) assignTarget();
         if (target == nullptr) return;
         if (!target->visible) return;
-        if (target->distance2DToLocalPlayer < util::metersToGameUnits(cl->AIMBOT_MIN_DISTANCE)) return;
-        if (target->distance2DToLocalPlayer > util::metersToGameUnits(cl->AIMBOT_MAX_DISTANCE)) return;
+        if (target->distance2DToLocalPlayer > MAX_DISTANCE) { target = nullptr; return; };
         moveMouse();
     }
 
     void moveMouse() {
-        //calculate smoothing    
-        float EXTRA_SMOOTH = cl->AIMBOT_SMOOTH_EXTRA_BY_DISTANCE / target->distanceToLocalPlayer;
-        float TOTAL_SMOOTH = cl->AIMBOT_SMOOTH + EXTRA_SMOOTH;
         //No recoil calcs
-        const FloatVector2D punchAnglesDiff = localPlayer->punchAnglesDiff.divide(TOTAL_SMOOTH).multiply(10);
-        const double nrPitchIncrement = punchAnglesDiff.x;
-        const double nrYawIncrement = -punchAnglesDiff.y;
+        FloatVector2D punchAnglesDiff = localPlayer->punchAnglesDiff.divide(cl->AIMBOT_SMOOTH).multiply(cl->AIMBOT_STICK_SPEED);
+        double nrPitchIncrement = punchAnglesDiff.x;
+        double nrYawIncrement = -punchAnglesDiff.y;
         //Aimbot calcs
-        const FloatVector2D aimbotDelta = target->aimbotDesiredAnglesIncrement.divide(TOTAL_SMOOTH).multiply(10);
-        const double aimYawIncrement = aimbotDelta.y * -1;
-        const double aimPitchIncrement = aimbotDelta.x;
+        FloatVector2D aimbotDelta = target->aimbotDesiredAnglesIncrement.divide(cl->AIMBOT_SMOOTH).multiply(cl->AIMBOT_STICK_SPEED);
+        double aimYawIncrement = aimbotDelta.y * -1;
+        double aimPitchIncrement = aimbotDelta.x;
         //combine
-        const double totalPitchIncrement = aimPitchIncrement + nrPitchIncrement;
-        const double totalYawIncrement = aimYawIncrement + nrYawIncrement;
+        double totalPitchIncrement = aimPitchIncrement + nrPitchIncrement;
+        double totalYawIncrement = aimYawIncrement + nrYawIncrement;
         //turn into integers
-        int totalPitchIncrementInt = roundHalfEven(atLeast_1_AwayFromZero(totalPitchIncrement));
-        int totalYawIncrementInt = roundHalfEven(atLeast_1_AwayFromZero(totalYawIncrement));
+        int totalPitchIncrementInt = roundHalfEven(totalPitchIncrement);
+        int totalYawIncrementInt = roundHalfEven(totalYawIncrement);
         //deadzone - are we close enough yet?
-        if (fabs(target->aimbotDesiredAnglesIncrement.x) < cl->AIMBOT_DEADZONE) totalPitchIncrementInt = 0;
-        if (fabs(target->aimbotDesiredAnglesIncrement.y) < cl->AIMBOT_DEADZONE) totalYawIncrementInt = 0;
+        if (fabs(target->aimbotDesiredAnglesIncrement.x) < MIN_AIMBOT_REACTION_FOV) totalPitchIncrementInt = 0;
+        if (fabs(target->aimbotDesiredAnglesIncrement.y) < MIN_AIMBOT_REACTION_FOV) totalYawIncrementInt = 0;
         if (totalPitchIncrementInt == 0 && totalYawIncrementInt == 0)return;
         //move mouse
         display->moveMouseRelative(totalPitchIncrementInt, totalYawIncrementInt);
@@ -72,19 +73,10 @@ struct AimBot {
             if (!p->enemy) continue;
             if (!p->visible) continue;
             if (p->aimedAt) continue;
-            if (fabs(p->aimbotDesiredAnglesIncrement.x) > cl->AIMBOT_FOV) continue;
-            if (fabs(p->aimbotDesiredAnglesIncrement.y) > cl->AIMBOT_FOV) continue;
-            if (target == nullptr || p->aimbotScore > target->aimbotScore) {
-                target = p;
-                target->aimbotLocked = true;
-            }
+            if (fabs(p->aimbotDesiredAnglesIncrement.x) > MAX_TARGET_ACQUISITION_FOV) continue;
+            if (fabs(p->aimbotDesiredAnglesIncrement.y) > MAX_TARGET_ACQUISITION_FOV) continue;
+            if (target == nullptr || p->aimbotScore > target->aimbotScore) target = p;
         }
-    }
-
-    void releaseTarget() {
-        if (target != nullptr && target->isValid())
-            target->aimbotLocked = false;
-        target = nullptr;
     }
 
     void resetLockFlag() {
@@ -97,14 +89,9 @@ struct AimBot {
             target->aimbotLocked = true;
     }
 
-    int roundHalfEven(float x) {
+    int roundHalfEven(double x) {
         return (x >= 0.0)
             ? static_cast<int>(std::round(x))
             : static_cast<int>(std::round(-x)) * -1;
-    }
-
-    float atLeast_1_AwayFromZero(float num) {
-        if (num > 0) return std::max(num, 1.0f);
-        return std::min(num, -1.0f);
     }
 };
